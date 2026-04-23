@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# PortableAI — Auto Installer (Linux / macOS)
+# PortableAI — Universal Installer (Linux / macOS)
 #
-# The llama.cpp tar.gz archive is built as:
-#   tar -C ./build/bin --transform "s,./,llama-bXXXX/," -czvf archive.tar.gz .
+# Downloads llama.cpp binaries for ALL platforms in one run:
+#   Linux  x64   → bin/linux/linux_x64/
+#   Linux  arm64 → bin/linux/linux_arm64/
+#   macOS  arm64 → bin/mac/mac_arm64/
+#   macOS  x64   → bin/mac/mac_x64/
 #
-# So inside the archive every file lives under a versioned folder like:
-#   llama-b8893/llama-server
-#   llama-b8893/libllama.so
-#   llama-b8893/libggml.so   (and other .so deps)
-#   llama-b8893/llama-cli
+# Windows binaries are handled by install.bat (run that on Windows).
+#
+# Archive layout inside tar.gz:
+#   llama-bXXXX/llama-server   ← server binary
+#   llama-bXXXX/libllama.so    ← required shared libs
+#   llama-bXXXX/libggml.so
+#   llama-bXXXX/libggml-cpu.so
 #   ... etc.
-#
-# We must extract ALL of those files into the bin destination dir so that
-# llama-server can find its shared libraries at runtime.
-# Only llama-server itself gets renamed; everything else keeps its name.
+# We strip the versioned top-level folder and copy EVERYTHING into BIN_DEST
+# so that llama-server can find its .so dependencies at runtime.
 
 set -uo pipefail
 
@@ -22,14 +25,16 @@ cd "$SCRIPT_DIR"
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
 echo -e "${CYAN}"
 echo " ╔═══════════════════════════════════════════╗"
-echo " ║      PortableAI  —  Auto Installer        ║"
-echo " ║      Downloads llama.cpp server binary    ║"
+echo " ║   PortableAI — Universal Installer        ║"
+echo " ║   Downloads llama.cpp for all platforms   ║"
 echo " ╚═══════════════════════════════════════════╝"
 echo -e "${NC}"
+echo -e " ${DIM}Windows users: run install.bat instead${NC}"
+echo ""
 
 # ── Dependency check ──────────────────────────────────────────────────────────
 for cmd in curl tar; do
@@ -41,61 +46,7 @@ for cmd in curl tar; do
     fi
 done
 
-# ── Detect OS / Architecture ──────────────────────────────────────────────────
-OS="$(uname -s)"
-ARCH="$(uname -m)"
-
-echo -e " ${BOLD}[*] Detected OS   :${NC} $OS"
-echo -e " ${BOLD}[*] Detected Arch :${NC} $ARCH"
-echo ""
-
-case "$OS" in
-    Linux*)
-        case "$ARCH" in
-            x86_64)
-                # Asset name pattern: llama-bXXXX-bin-ubuntu-x64.tar.gz
-                ASSET_GREP="ubuntu-x64\.tar\.gz"
-                BIN_DEST="$SCRIPT_DIR/bin/linux/linux_x64"
-                BIN_FINAL="llama-server-linux-x64"
-                ;;
-            aarch64)
-                # Asset name pattern: llama-bXXXX-bin-ubuntu-arm64.tar.gz
-                ASSET_GREP="ubuntu-arm64\.tar\.gz"
-                BIN_DEST="$SCRIPT_DIR/bin/linux/linux_arm64"
-                BIN_FINAL="llama-server-linux-arm"
-                ;;
-            *)
-                echo -e "${RED} [!] Unsupported Linux arch: $ARCH${NC}"
-                exit 1 ;;
-        esac
-        ;;
-    Darwin*)
-        case "$ARCH" in
-            arm64)
-                ASSET_GREP="macos-arm64\.tar\.gz"
-                BIN_DEST="$SCRIPT_DIR/bin/mac/mac_arm64"
-                BIN_FINAL="llama-server-mac-arm"
-                ;;
-            x86_64)
-                ASSET_GREP="macos-x64\.tar\.gz"
-                BIN_DEST="$SCRIPT_DIR/bin/mac/mac_x64"
-                BIN_FINAL="llama-server-mac-x64"
-                ;;
-            *)
-                echo -e "${RED} [!] Unsupported macOS arch: $ARCH${NC}"
-                exit 1 ;;
-        esac
-        ;;
-    *)
-        echo -e "${RED} [!] Unsupported OS: $OS${NC}"
-        exit 1 ;;
-esac
-
-echo -e " ${GREEN}[✓] Install dir   :${NC} $BIN_DEST"
-echo -e " ${GREEN}[✓] Server binary :${NC} $BIN_FINAL"
-echo ""
-
-# ── Fetch latest release JSON ─────────────────────────────────────────────────
+# ── Fetch latest release JSON once ───────────────────────────────────────────
 echo -e " ${YELLOW}[*] Fetching latest llama.cpp release from GitHub API...${NC}"
 
 RELEASE_JSON=$(curl -fsSL \
@@ -112,156 +63,204 @@ RELEASE_TAG=$(echo "$RELEASE_JSON" \
 
 if [ -z "$RELEASE_TAG" ]; then
     echo -e "${RED} [!] Could not parse release tag. GitHub may be rate-limiting.${NC}"
-    echo " Response preview:"
-    echo "$RELEASE_JSON" | head -c 300
+    echo "$RELEASE_JSON" | head -c 400
     exit 1
 fi
 echo -e " ${GREEN}[✓] Latest release :${NC} $RELEASE_TAG"
+echo ""
 
-# ── Pull all download URLs from the JSON ─────────────────────────────────────
+# ── Extract all download URLs ─────────────────────────────────────────────────
 ALL_URLS=$(echo "$RELEASE_JSON" \
     | grep '"browser_download_url"' \
     | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/')
 
 if [ -z "$ALL_URLS" ]; then
-    echo -e "${RED} [!] No download URLs in API response (rate-limited?).${NC}"
-    echo " Try again in a few minutes, or visit:"
-    echo " https://github.com/ggml-org/llama.cpp/releases/latest"
+    echo -e "${RED} [!] No download URLs found (rate-limited?). Try again in a few minutes.${NC}"
     exit 1
 fi
 
-# ── Find our asset — skip GPU builds ─────────────────────────────────────────
-echo -e " ${YELLOW}[*] Searching for matching CPU archive...${NC}"
+# ── Helper: download and install one platform ─────────────────────────────────
+# Usage: install_platform  LABEL  ASSET_GREP  BIN_DEST  BIN_FINAL  ARCHIVE_TYPE
+#   LABEL        — human label e.g. "Linux x64"
+#   ASSET_GREP   — grep pattern to match asset filename
+#   BIN_DEST     — destination directory
+#   BIN_FINAL    — canonical server binary name after rename
+#   ARCHIVE_TYPE — "tar.gz" or "zip"
+install_platform() {
+    local LABEL="$1"
+    local ASSET_GREP="$2"
+    local BIN_DEST="$3"
+    local BIN_FINAL="$4"
+    local ARCHIVE_TYPE="$5"
 
-ASSET_URL=$(echo "$ALL_URLS" \
-    | grep -E "$ASSET_GREP" \
-    | grep -iv "cuda\|vulkan\|rocm\|kompute\|sycl\|opencl\|mpi\|openvino\|openeuler\|kleidiai" \
-    | head -1 || true)
+    echo -e "${CYAN} ┌─────────────────────────────────────────────┐${NC}"
+    echo -e "${CYAN} │  Installing: ${BOLD}$LABEL${NC}${CYAN}$(printf '%*s' $((45 - ${#LABEL})) '')│${NC}"
+    echo -e "${CYAN} └─────────────────────────────────────────────┘${NC}"
 
-if [ -z "$ASSET_URL" ]; then
-    echo -e "${RED} [!] No matching asset found for pattern: $ASSET_GREP${NC}"
-    echo ""
-    echo " All non-GPU assets in $RELEASE_TAG:"
-    echo "$ALL_URLS" \
-        | grep -iv "cuda\|vulkan\|rocm\|kompute\|sycl\|opencl\|mpi\|openvino\|openeuler" \
-        | while read -r url; do echo "     $(basename "$url")"; done
-    echo ""
-    echo " Manual fallback:"
-    echo "   1. Download the tar.gz from https://github.com/ggml-org/llama.cpp/releases/latest"
-    echo "   2. Extract ALL contents into: $BIN_DEST/"
-    echo "   3. Rename llama-server → $BIN_DEST/$BIN_FINAL"
-    exit 1
-fi
+    # Find matching asset URL (skip GPU builds)
+    local ASSET_URL
+    ASSET_URL=$(echo "$ALL_URLS" \
+        | grep -E "$ASSET_GREP" \
+        | grep -iv "cuda\|vulkan\|rocm\|kompute\|sycl\|opencl\|mpi\|openvino\|openeuler\|kleidiai" \
+        | head -1 || true)
 
-ASSET_FILENAME="$(basename "$ASSET_URL")"
-echo -e " ${GREEN}[✓] Asset found   :${NC} $ASSET_FILENAME"
-echo ""
-
-# ── Download ──────────────────────────────────────────────────────────────────
-TMP_DIR="$(mktemp -d)"
-trap 'echo ""; echo " [*] Cleaning up temp files..."; rm -rf "$TMP_DIR"' EXIT
-
-echo -e " ${YELLOW}[*] Downloading...${NC}"
-echo "     (Size is typically 10–80 MB for CPU builds)"
-curl -L --progress-bar -o "$TMP_DIR/$ASSET_FILENAME" "$ASSET_URL" || {
-    echo -e "${RED} [!] Download failed.${NC}"
-    exit 1
-}
-echo ""
-
-# ── Extract all files ─────────────────────────────────────────────────────────
-# The tar.gz contains a versioned top-level folder: llama-b8893/
-# We strip that prefix so all files land flat in EXTRACT_DIR.
-echo -e " ${YELLOW}[*] Extracting all files from archive...${NC}"
-EXTRACT_DIR="$TMP_DIR/extracted"
-mkdir -p "$EXTRACT_DIR"
-
-# --strip-components=1 removes the top-level versioned dir (llama-bXXXX/)
-tar -xzf "$TMP_DIR/$ASSET_FILENAME" \
-    -C "$EXTRACT_DIR" \
-    --strip-components=1 || {
-    echo -e "${RED} [!] Extraction failed.${NC}"
-    # Try without --strip-components as fallback (some archives differ)
-    echo " Retrying without --strip-components..."
-    tar -xzf "$TMP_DIR/$ASSET_FILENAME" -C "$EXTRACT_DIR" || {
-        echo -e "${RED} [!] Extraction failed completely.${NC}"
-        exit 1
-    }
-    # If the top-level dir still exists, move its contents up
-    INNER=$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)
-    if [ -n "$INNER" ]; then
-        mv "$INNER"/* "$EXTRACT_DIR/" 2>/dev/null || true
-        rmdir "$INNER" 2>/dev/null || true
+    if [ -z "$ASSET_URL" ]; then
+        echo -e " ${YELLOW} [~] No asset found for $LABEL (skipping)${NC}"
+        echo -e " ${DIM}     Pattern tried: $ASSET_GREP${NC}"
+        echo ""
+        return 0
     fi
+
+    local ASSET_FILENAME
+    ASSET_FILENAME="$(basename "$ASSET_URL")"
+    echo -e "  ${GREEN}[✓] Asset    :${NC} $ASSET_FILENAME"
+    echo -e "  ${GREEN}[✓] Dest dir :${NC} $BIN_DEST"
+
+    # Temp workspace
+    local TMP_DIR
+    TMP_DIR="$(mktemp -d)"
+
+    # Download
+    echo -e "  ${YELLOW}[*] Downloading...${NC}"
+    curl -L --progress-bar -o "$TMP_DIR/$ASSET_FILENAME" "$ASSET_URL" || {
+        echo -e "  ${RED}[!] Download failed for $LABEL${NC}"
+        rm -rf "$TMP_DIR"
+        return 1
+    }
+    echo ""
+
+    # Extract
+    local EXTRACT_DIR="$TMP_DIR/extracted"
+    mkdir -p "$EXTRACT_DIR"
+
+    echo -e "  ${YELLOW}[*] Extracting...${NC}"
+    if [ "$ARCHIVE_TYPE" = "tar.gz" ]; then
+        # Strip the top-level versioned folder (llama-bXXXX/)
+        tar -xzf "$TMP_DIR/$ASSET_FILENAME" \
+            -C "$EXTRACT_DIR" \
+            --strip-components=1 2>/dev/null || {
+            # Fallback: extract as-is then flatten
+            tar -xzf "$TMP_DIR/$ASSET_FILENAME" -C "$EXTRACT_DIR" || {
+                echo -e "  ${RED}[!] Extraction failed for $LABEL${NC}"
+                rm -rf "$TMP_DIR"
+                return 1
+            }
+            local INNER
+            INNER=$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)
+            if [ -n "$INNER" ]; then
+                mv "$INNER"/* "$EXTRACT_DIR/" 2>/dev/null || true
+                rmdir "$INNER" 2>/dev/null || true
+            fi
+        }
+    elif [ "$ARCHIVE_TYPE" = "zip" ]; then
+        if command -v unzip &>/dev/null; then
+            unzip -q "$TMP_DIR/$ASSET_FILENAME" -d "$EXTRACT_DIR" || {
+                echo -e "  ${RED}[!] Extraction (zip) failed for $LABEL${NC}"
+                rm -rf "$TMP_DIR"
+                return 1
+            }
+        else
+            echo -e "  ${YELLOW}[~] 'unzip' not found — skipping $LABEL zip extraction${NC}"
+            echo -e "  ${DIM}    Install unzip: sudo pacman -S unzip  OR  sudo apt install unzip${NC}"
+            rm -rf "$TMP_DIR"
+            return 0
+        fi
+    fi
+
+    echo -e "  ${DIM} Extracted files:${NC}"
+    ls -lh "$EXTRACT_DIR" | tail -n +2 | awk '{printf "     %-42s %s\n", $NF, $5}'
+    echo ""
+
+    # Install all files to destination
+    mkdir -p "$BIN_DEST"
+    cp -r "$EXTRACT_DIR"/. "$BIN_DEST/"
+
+    # Fix permissions
+    find "$BIN_DEST" -maxdepth 1 -type f ! -name "*.*"   -exec chmod +x {} \; 2>/dev/null || true
+    find "$BIN_DEST" -maxdepth 1 -type f -name "*.so*"   -exec chmod 755 {} \; 2>/dev/null || true
+    find "$BIN_DEST" -maxdepth 1 -type f -name "*.dylib" -exec chmod 755 {} \; 2>/dev/null || true
+
+    # Rename llama-server / llama-server.exe → canonical name
+    if [ -f "$BIN_DEST/llama-server" ]; then
+        cp "$BIN_DEST/llama-server" "$BIN_DEST/$BIN_FINAL"
+        chmod +x "$BIN_DEST/$BIN_FINAL"
+        echo -e "  ${GREEN}[✓] Renamed  :${NC} llama-server → $BIN_FINAL"
+    elif [ -f "$BIN_DEST/llama-server.exe" ]; then
+        cp "$BIN_DEST/llama-server.exe" "$BIN_DEST/$BIN_FINAL"
+        echo -e "  ${GREEN}[✓] Renamed  :${NC} llama-server.exe → $BIN_FINAL"
+    else
+        echo -e "  ${RED}[!] llama-server binary not found in extracted files for $LABEL!${NC}"
+        ls -lh "$BIN_DEST"
+        rm -rf "$TMP_DIR"
+        return 1
+    fi
+
+    echo -e "  ${GREEN}[✓] $LABEL installed successfully${NC}"
+    rm -rf "$TMP_DIR"
+    echo ""
 }
 
-echo " Extracted files:"
-ls -lh "$EXTRACT_DIR" | tail -n +2 | awk '{printf "     %-40s %s\n", $NF, $5}'
-echo ""
-
-# ── Install — copy ALL files to bin destination ───────────────────────────────
-# llama-server links against libllama.so, libggml.so, libggml-cpu.so etc.
-# All of them must live next to the binary (or in LD_LIBRARY_PATH).
-# The simplest and most portable solution: put everything in BIN_DEST.
-echo -e " ${YELLOW}[*] Installing all files to:${NC} $BIN_DEST"
-mkdir -p "$BIN_DEST"
-
-cp -r "$EXTRACT_DIR"/. "$BIN_DEST/"
-
-# Fix permissions — make every file without an extension (binary) executable
-find "$BIN_DEST" -maxdepth 1 -type f ! -name "*.*" -exec chmod +x {} \;
-# Also make .so files readable
-find "$BIN_DEST" -maxdepth 1 -type f -name "*.so*" -exec chmod 755 {} \; 2>/dev/null || true
-
-echo -e " ${GREEN}[✓] All files installed.${NC}"
-
-# ── Rename llama-server → our canonical name ──────────────────────────────────
-if [ -f "$BIN_DEST/llama-server" ]; then
-    cp "$BIN_DEST/llama-server" "$BIN_DEST/$BIN_FINAL"
-    chmod +x "$BIN_DEST/$BIN_FINAL"
-    echo -e " ${GREEN}[✓] Renamed        :${NC} llama-server → $BIN_FINAL"
-else
-    echo -e "${RED} [!] llama-server not found in extracted files!${NC}"
-    echo " Contents of $BIN_DEST:"
-    ls -lh "$BIN_DEST"
-    exit 1
-fi
-
-# ── Web UI assets ─────────────────────────────────────────────────────────────
-# llama.cpp no longer ships separate HTML files — the web UI is embedded
-# in the llama-server binary itself. The --path flag just lets you override it.
-mkdir -p "$SCRIPT_DIR/ui"
-echo -e " ${YELLOW}[~] Note: llama.cpp now embeds the web UI in the binary.${NC}"
-echo "     The ui/ folder is kept for compatibility but is not required."
-
-# ── Ensure models directory exists ────────────────────────────────────────────
+# ── Create required directories ───────────────────────────────────────────────
 mkdir -p "$SCRIPT_DIR/models"
+mkdir -p "$SCRIPT_DIR/ui"
 
-# ── Verify the binary runs ────────────────────────────────────────────────────
-echo ""
-echo -e " ${YELLOW}[*] Verifying binary...${NC}"
-VERSION_OUT=$("$BIN_DEST/$BIN_FINAL" --version 2>&1 | head -2 || true)
-if [ -n "$VERSION_OUT" ]; then
-    echo -e " ${GREEN}[✓] Binary OK :${NC}"
-    echo "$VERSION_OUT" | while read -r line; do echo "     $line"; done
-else
-    echo -e " ${YELLOW}[~] --version returned nothing (binary may still be fine).${NC}"
-    echo "     If start.sh fails, check: ldd $BIN_DEST/$BIN_FINAL"
-fi
+# ── Install all platforms ─────────────────────────────────────────────────────
+# Format: install_platform LABEL GREP_PATTERN BIN_DEST BIN_FINAL ARCHIVE_TYPE
 
-# ── Summary ───────────────────────────────────────────────────────────────────
-echo ""
+install_platform \
+    "Linux x64" \
+    "ubuntu-x64\.tar\.gz" \
+    "$SCRIPT_DIR/bin/linux/linux_x64" \
+    "llama-server-linux-x64" \
+    "tar.gz"
+
+install_platform \
+    "Linux arm64" \
+    "ubuntu-arm64\.tar\.gz" \
+    "$SCRIPT_DIR/bin/linux/linux_arm64" \
+    "llama-server-linux-arm" \
+    "tar.gz"
+
+# Windows zip — extracted on Linux for cross-platform USB drive use.
+# DLLs + exe will be placed in bin/windows/ so they work when run on Windows.
+install_platform \
+    "Windows x64 (CPU)" \
+    "win-cpu-x64\.zip" \
+    "$SCRIPT_DIR/bin/windows" \
+    "llama-server-win.exe" \
+    "zip"
+
+install_platform \
+    "macOS arm64 (Apple Silicon)" \
+    "macos-arm64\.tar\.gz" \
+    "$SCRIPT_DIR/bin/mac/mac_arm64" \
+    "llama-server-mac-arm" \
+    "tar.gz"
+
+install_platform \
+    "macOS x64 (Intel)" \
+    "macos-x64\.tar\.gz" \
+    "$SCRIPT_DIR/bin/mac/mac_x64" \
+    "llama-server-mac-x64" \
+    "tar.gz"
+
+# ── Final summary ─────────────────────────────────────────────────────────────
 echo -e "${GREEN} ╔═══════════════════════════════════════════╗${NC}"
-echo -e "${GREEN} ║  ✅  Installation Complete!               ║${NC}"
+echo -e "${GREEN} ║      All Platforms Installed!             ║${NC}"
 echo -e "${GREEN} ╚═══════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  Release : ${CYAN}$RELEASE_TAG${NC}"
-echo -e "  Files   → ${CYAN}$BIN_DEST/${NC}"
-echo -e "  Server  → ${CYAN}$BIN_DEST/$BIN_FINAL${NC}"
-echo -e "  Models  → ${CYAN}$SCRIPT_DIR/models/${NC}"
+echo ""
+echo -e "  ${BOLD}Directory layout:${NC}"
+echo -e "  ${DIM}bin/linux/linux_x64/   → llama-server-linux-x64  + .so libs${NC}"
+echo -e "  ${DIM}bin/linux/linux_arm64/ → llama-server-linux-arm   + .so libs${NC}"
+echo -e "  ${DIM}bin/mac/mac_arm64/     → llama-server-mac-arm     + .dylib libs${NC}"
+echo -e "  ${DIM}bin/mac/mac_x64/       → llama-server-mac-x64     + .dylib libs${NC}"
+echo -e "  ${DIM}bin/windows/           → llama-server-win.exe     + .dll files${NC}"
 echo ""
 echo " Next steps:"
-echo "   1. Drop a .gguf model in:  models/"
+echo "   1. Drop a .gguf model into:  models/"
 echo "      Grab one from https://huggingface.co  (Q4_K_M recommended)"
-echo "   2. Run:  ./start.sh"
+echo "   2. Linux/macOS → run:  ./start.sh"
+echo "      Windows     → run:  start.bat"
 echo ""
