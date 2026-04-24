@@ -1,19 +1,5 @@
 #!/usr/bin/env bash
 # PortableAI — Universal Installer (Linux / macOS)
-#
-# Asks the user which platform(s) to install, then downloads the correct
-# llama.cpp binary archive from the latest GitHub release and extracts
-# ALL files (binary + shared libs) into the right bin/ subdirectory.
-#
-# Archive layout inside every tar.gz:
-#   llama-bXXXX/llama-server      ← server binary
-#   llama-bXXXX/libllama.so       ← required shared libs (Linux)
-#   llama-bXXXX/libggml.so
-#   llama-bXXXX/libggml-cpu.so
-#   llama-bXXXX/*.dylib           (macOS)
-#   ... etc.
-# --strip-components=1 flattens the top-level versioned folder so everything
-# lands directly in the destination directory.
 
 set -uo pipefail
 

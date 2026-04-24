@@ -1,10 +1,5 @@
 #!/usr/bin/env bash
 # PortableAI — Launcher (Linux / macOS)
-#
-# Selects the correct binary for the current OS/arch, sets LD_LIBRARY_PATH
-# so shared libs (.so / .dylib) next to the binary are found automatically,
-# then starts the llama.cpp web server.
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
