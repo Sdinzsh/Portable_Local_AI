@@ -116,7 +116,7 @@ start "" /b cmd /c "timeout /t 3 /nobreak >nul & start http://127.0.0.1:8080"
     -c 4096 ^
     -t %THREADS% ^
     --port 8080 ^
-    --host 0.0.0.0 ^
+    --host 0.0.0.0
 ::    --path "%~dp0ui"
 
 endlocal
