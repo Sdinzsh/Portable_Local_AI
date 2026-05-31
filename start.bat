@@ -9,7 +9,8 @@ echo    Plug-and-play Local LLM Server
 echo ---------------------------------------------
 echo.
 
-:: ---------- Check for Visual C++ Runtime (VCRUNTIME140_1.dll) ----------
+
+:: ---------- Check for Visual C++ Runtime (VCRUNTIME140_1.dll) ---------------
 if not exist "%SystemRoot%\System32\VCRUNTIME140_1.dll" (
     echo [!] Missing: VCRUNTIME140_1.dll
     echo.
@@ -22,7 +23,7 @@ if not exist "%SystemRoot%\System32\VCRUNTIME140_1.dll" (
     exit /b 1
 )
 
-:: ---------- Collect all .gguf models in models\ ----------
+:: ---------- Collect all .gguf models in models\ -----------------------------
 set "MODEL_COUNT=0"
 for %%f in ("models\*.gguf") do (
     set /a MODEL_COUNT+=1
@@ -37,7 +38,7 @@ if %MODEL_COUNT% equ 0 (
     exit /b 1
 )
 
-:: ---------- Model selection ----------
+:: ---------- Model selection --------------------------------------------------
 if %MODEL_COUNT% equ 1 (
     set "MODEL=!MODEL_1!"
     for %%m in ("!MODEL!") do set "MODEL_NAME=%%~nxm"
@@ -54,24 +55,27 @@ if %MODEL_COUNT% equ 1 (
         echo     [%%i] !NAME!   (!SIZE_MB! MB)
     )
     echo.
+
     :CHOOSE_LOOP
     set "CHOICE="
     set /p "CHOICE= Enter number [1-%MODEL_COUNT%]: "
     if not defined CHOICE goto CHOOSE_LOOP
+
     set "VALID=0"
     for /l %%i in (1,1,%MODEL_COUNT%) do if "!CHOICE!"=="%%i" set "VALID=1"
     if !VALID! equ 0 (
         echo [!] Invalid. Enter a number between 1 and %MODEL_COUNT%.
         goto CHOOSE_LOOP
     )
+
     set "MODEL=!MODEL_%CHOICE%!"
     for %%m in ("!MODEL!") do set "MODEL_NAME=%%~nxm"
     echo.
     echo [+] Selected: !MODEL_NAME!
 )
 
-:: ---------- Binary path ----------
-set "BIN_DIR=bin\windows"
+:: ---------- Binary path ------------------------------------------------------
+set "BIN_DIR=%~dp0bin\windows"
 set "BIN=%BIN_DIR%\llama-server-win.exe"
 
 if not exist "%BIN%" (
@@ -81,16 +85,17 @@ if not exist "%BIN%" (
     exit /b 1
 )
 
-:: Ensure DLLs next to the binary are found
+:: FIX [BUG-11]: Prepend our DLL dir so our DLLs always win over anything
+:: else in PATH (avoids loading a wrong ggml.dll / llama.dll from another tool)
 set "PATH=%BIN_DIR%;%PATH%"
 
-:: ---------- Thread count (logical cores minus 1) ----------
+:: ---------- Thread count (logical cores minus 1) ----------------------------
 set "CORES=%NUMBER_OF_PROCESSORS%"
 if not defined CORES set "CORES=4"
 set /a THREADS=%CORES% - 1
 if %THREADS% lss 1 set THREADS=1
 
-:: ---------- Launch info ----------
+:: ---------- Launch info ------------------------------------------------------
 echo.
 echo [+] OS       : Windows (%PROCESSOR_ARCHITECTURE%)
 echo [+] Threads  : %THREADS%
@@ -100,11 +105,20 @@ echo.
 echo Press Ctrl+C to stop the server.
 echo ------------------------------------
 
-:: ---------- Open browser after 3 seconds ----------
+:: ---------- Open browser after 3 seconds ------------------------------------
 start "" /b cmd /c "timeout /t 3 /nobreak >nul & start http://127.0.0.1:8080"
 
-:: ---------- Start the server ----------
-"%BIN%" -m "%MODEL%" -c 4096 -t %THREADS% --port 8080 --host 0.0.0.0
+:: ---------- Start the server -------------------------------------------------
+:: FIX: --path points to the ui\ folder next to this script so the
+:: custom web UI is served. "%~dp0ui" is always the USB-resident ui\ dir.
+"%BIN%" ^
+    -m "%MODEL%" ^
+    -c 4096 ^
+    -t %THREADS% ^
+    --port 8080 ^
+    --host 0.0.0.0 ^
+::    --path "%~dp0ui"
 
 endlocal
+pause
 exit /b

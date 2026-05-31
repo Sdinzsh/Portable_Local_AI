@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # PortableAI — Launcher (Linux / macOS)
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+#cd "$SCRIPT_DIR"
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'
@@ -9,13 +10,15 @@ RED='\033[0;31m'; BOLD='\033[1m'; NC='\033[0m'
 
 echo ""
 echo -e "${CYAN} ╔═══════════════════════════════════════════╗${NC}"
-echo -e "${CYAN} ║      PortableAI  —  Zero Dependency       ║${NC}"
-echo -e "${CYAN} ║      Plug-and-play Local LLM Server       ║${NC}"
+echo -e "${CYAN} ║  PortableAI — Zero Dependency             ║${NC}"
+echo -e "${CYAN} ║  Plug-and-play Local LLM Server           ║${NC}"
 echo -e "${CYAN} ╚═══════════════════════════════════════════╝${NC}"
 echo ""
 
-# ── Collect all .gguf models ──────────────────────────────────────────────────
-mapfile -t MODELS < <(find "$SCRIPT_DIR/models" -maxdepth 1 -name "*.gguf" -type f 2>/dev/null | sort)
+MODELS=()
+while IFS= read -r -d '' f; do
+    MODELS+=("$f")
+done < <(find "$SCRIPT_DIR/models" -maxdepth 1 -name "*.gguf" -type f -print0 2>/dev/null | sort -z)
 
 if [ "${#MODELS[@]}" -eq 0 ]; then
     echo -e "${RED} [!] No .gguf model found in models/${NC}"
@@ -37,10 +40,10 @@ else
     done
     echo ""
     while true; do
-        read -rp " Enter number [1-${#MODELS[@]}]: " CHOICE
+        read -rp "     Enter number [1-${#MODELS[@]}]: " CHOICE
         if [[ "$CHOICE" =~ ^[0-9]+$ ]] \
-            && [ "$CHOICE" -ge 1 ] \
-            && [ "$CHOICE" -le "${#MODELS[@]}" ]; then
+           && [ "$CHOICE" -ge 1 ] \
+           && [ "$CHOICE" -le "${#MODELS[@]}" ]; then
             MODEL="${MODELS[$((CHOICE-1))]}"
             break
         fi
@@ -66,8 +69,7 @@ case "$OS" in
                 BIN="$BIN_DIR/llama-server-linux-arm"
                 ;;
             *)
-                echo -e "${RED} [!] Unsupported Linux architecture: $ARCH${NC}"
-                exit 1 ;;
+                echo -e "${RED} [!] Unsupported Linux arch: $ARCH${NC}"; exit 1 ;;
         esac
         ;;
     Darwin*)
@@ -81,8 +83,7 @@ case "$OS" in
                 BIN="$BIN_DIR/llama-server-mac-x64"
                 ;;
             *)
-                echo -e "${RED} [!] Unsupported macOS architecture: $ARCH${NC}"
-                exit 1 ;;
+                echo -e "${RED} [!] Unsupported macOS arch: $ARCH${NC}"; exit 1 ;;
         esac
         ;;
     *)
@@ -91,23 +92,105 @@ case "$OS" in
         exit 1 ;;
 esac
 
-if [ ! -f "$BIN" ]; then
+if [ ! -f "$BIN" ] && [ ! -L "$BIN" ]; then
     echo -e "${RED} [!] Binary not found: $BIN${NC}"
     echo "     Run ./install.sh first."
     exit 1
 fi
-chmod +x "$BIN"
 
-# ── Set library search path so .so/.dylib files next to binary are found ──────
-# llama-server links against libllama.so, libggml.so, libggml-cpu.so etc.
-# install.sh copies all of them into BIN_DIR alongside the binary.
+# ── Filesystem compatibility check ───────────────────────────────────────────
+
+_TMPDIR=""
+
+_cleanup() {
+    # FIX [5]: clean up /tmp working copy on any exit
+    if [ -n "$_TMPDIR" ] && [ -d "$_TMPDIR" ]; then
+        rm -rf "$_TMPDIR"
+    fi
+}
+trap _cleanup EXIT INT TERM
+
+_is_restricted_fs() {
+    local dir="$1"
+
+    # Layer A: check /proc/mounts for noexec flag (Linux only)
+    if [ -f /proc/mounts ]; then
+        local mp
+        mp=$(stat -c '%m' "$dir" 2>/dev/null) || mp=""
+        if [ -n "$mp" ] && grep -qE " ${mp} [^ ]+ [^,]*(noexec|nosuid)" /proc/mounts 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    # Layer B: filesystem type check
+    local fstype=""
+    # Linux: stat -f -c '%T'
+    fstype=$(stat -f -c '%T' "$dir" 2>/dev/null) || true
+    # macOS: stat -f '%T'
+    [ -z "$fstype" ] && fstype=$(stat -f '%T' "$dir" 2>/dev/null) || true
+    case "${fstype,,}" in
+        msdos|vfat|exfat|fuseblk|ntfs|ntfs-3g|cifs|smbfs|fuse.ntfs*|fuse.exfat*)
+            return 0 ;;
+    esac
+
+    # Layer C: chmod test — fails on FAT32 even without explicit noexec
+    if ! chmod +x "$BIN" 2>/dev/null; then
+        return 0
+    fi
+
+    # Layer D: try running the binary (catches edge cases the above miss)
+    if ! "$BIN" --version >/dev/null 2>&1; then
+        # Could be noexec OR missing libs — either way, copying to /tmp fixes both
+        return 0
+    fi
+
+    return 1  # filesystem is fine
+}
+
+if _is_restricted_fs "$BIN_DIR"; then
+    echo -e " ${YELLOW}[~] Restricted filesystem detected (FAT32 / exFAT / noexec).${NC}"
+    echo -e " ${YELLOW}[~] Copying binaries + libs to /tmp for execution ...${NC}"
+
+    _TMPDIR="$(mktemp -d /tmp/portableai.XXXXXXXX)"
+
+    _copy_resolving_symlinks() {
+        local src_dir="$1"
+        local dst_dir="$2"
+        for f in "$src_dir"/*; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            local fname
+            fname="$(basename "$f")"
+            if [ -L "$f" ]; then
+                # Resolve to the real file and copy as a regular file
+                local real
+                real="$(readlink -f "$f" 2>/dev/null || realpath "$f" 2>/dev/null || echo "")"
+                if [ -n "$real" ] && [ -f "$real" ]; then
+                    cp "$real" "$dst_dir/$fname"
+                fi
+            elif [ -f "$f" ]; then
+                cp "$f" "$dst_dir/$fname"
+            fi
+        done
+    }
+
+    # Try cp -L first (resolves symlinks atomically), fall back to manual loop
+    if cp -L "$BIN_DIR"/. "$_TMPDIR"/ 2>/dev/null \
+    || cp -rL "$BIN_DIR"/. "$_TMPDIR"/ 2>/dev/null; then
+        : # success
+    else
+        _copy_resolving_symlinks "$BIN_DIR" "$_TMPDIR"
+    fi
+
+    BIN="$_TMPDIR/$(basename "$BIN")"
+    BIN_DIR="$_TMPDIR"
+    chmod +x "$BIN"
+
+    echo -e " ${GREEN}[+] Staging dir :${NC} $_TMPDIR"
+fi
+
 case "$OS" in
-    Linux*)
-        export LD_LIBRARY_PATH="$BIN_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-        ;;
-    Darwin*)
-        export DYLD_LIBRARY_PATH="$BIN_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-        ;;
+    Linux*)  export LD_LIBRARY_PATH="$BIN_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+    Darwin*) export DYLD_LIBRARY_PATH="$BIN_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" ;;
 esac
 
 # ── Thread count (all logical cores minus one) ────────────────────────────────
@@ -122,13 +205,13 @@ fi
 
 # ── Launch info ───────────────────────────────────────────────────────────────
 echo ""
-echo -e " ${GREEN}[+] OS       :${NC} $OS ($ARCH)"
-echo -e " ${GREEN}[+] Threads  :${NC} $THREADS"
-echo -e " ${GREEN}[+] Local UI :${NC} http://127.0.0.1:8080"
-echo -e " ${GREEN}[+] LAN      :${NC} http://0.0.0.0:8080  (same Wi-Fi)"
+echo -e " ${GREEN}[+] OS        :${NC} $OS ($ARCH)"
+echo -e " ${GREEN}[+] Threads   :${NC} $THREADS"
+echo -e " ${GREEN}[+] Local UI  :${NC} http://127.0.0.1:8080"
+echo -e " ${GREEN}[+] LAN       :${NC} http://0.0.0.0:8080  (same Wi-Fi)"
 echo ""
-echo " Press Ctrl+C to stop the server."
-echo " ─────────────────────────────────────────────"
+echo "     Press Ctrl+C to stop the server."
+echo "     ─────────────────────────────────────────────"
 
 # ── Open browser after 3 seconds ─────────────────────────────────────────────
 (sleep 3 && \
@@ -139,10 +222,11 @@ echo " ────────────────────────�
     fi
 ) &>/dev/null &
 
-# ── Start server ──────────────────────────────────────────────────────────────
+
 exec "$BIN" \
     -m "$MODEL" \
     -c 4096 \
     -t "$THREADS" \
     --port 8080 \
     --host 0.0.0.0
+#    --path "$SCRIPT_DIR/ui"

@@ -7,8 +7,8 @@ echo ---------------------------------------------
 echo    PortableAI - Universal Installer
 echo    Downloads llama.cpp for any platform
 echo ---------------------------------------------
-echo.
 
+:: ── Dependency check ─────────────────────────────────────────────────────────
 where curl >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
     echo [!] curl not found. Please install curl.
@@ -19,12 +19,12 @@ if %ERRORLEVEL% NEQ 0 (
 
 where tar >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
-    echo [!] tar not found. Windows 10 17063+ includes it.
+    echo [!] tar not found. Windows 10 build 17063+ includes it.
     pause
     exit /b 1
 )
 
-:: Platform definitions (LABEL, ASSET_SUBSTRING, BIN_DEST, BIN_FINAL, ARCHIVE_TYPE)
+:: ── Platform definitions ─────────────────────────────────────────────────────
 set "PLATFORM_1_LABEL=Linux x64 (most PCs/servers)"
 set "PLATFORM_1_ASSET=ubuntu-x64.tar.gz"
 set "PLATFORM_1_BIN_DEST=bin\linux\linux_x64"
@@ -55,6 +55,7 @@ set "PLATFORM_5_BIN_DEST=bin\windows"
 set "PLATFORM_5_BIN_FINAL=llama-server-win.exe"
 set "PLATFORM_5_ARCHIVE=zip"
 
+:: ── Platform selection menu ──────────────────────────────────────────────────
 echo Select which platform(s) to install:
 echo.
 echo    [1] Linux x64 (most PCs/servers)
@@ -96,11 +97,11 @@ for %%t in (%RAW_CHOICE%) do (
         if !TOKEN! geq 1 if !TOKEN! leq 5 (
             set "SELECTED_INDICES=!SELECTED_INDICES! !TOKEN!"
         ) else (
-            echo [!] Invalid option: '!TOKEN!'. Enter numbers 1-5, A, or Q.
+            echo [!] Invalid: '!TOKEN!'. Enter numbers 1-5, A, or Q.
             set "VALID=0"
         )
     ) else (
-        echo [!] Invalid option: '!TOKEN!'. Enter numbers 1-5, A, or Q.
+        echo [!] Invalid: '!TOKEN!'. Enter numbers 1-5, A, or Q.
         set "VALID=0"
     )
 )
@@ -109,7 +110,6 @@ if !VALID! equ 0 (
     set "SELECTED_INDICES="
     goto SELECT_LOOP
 )
-
 if not defined SELECTED_INDICES (
     echo [!] No selection made. Try again.
     goto SELECT_LOOP
@@ -127,6 +127,7 @@ for %%i in (%SELECTED_INDICES%) do (
 )
 echo.
 
+:: ── Fetch latest release from GitHub API ────────────────────────────────────
 echo [*] Fetching latest llama.cpp release from GitHub API...
 
 set "RELEASE_TAG="
@@ -158,7 +159,7 @@ echo [OK] Latest release: %RELEASE_TAG%
 echo.
 
 if not exist "models" mkdir "models"
-if not exist "ui" mkdir "ui"
+if not exist "ui"     mkdir "ui"
 
 set "FAILED_COUNT=0"
 set "FAILED_LIST="
@@ -171,6 +172,7 @@ for %%i in (%SELECTED_INDICES%) do (
     )
 )
 
+:: ── Final summary ────────────────────────────────────────────────────────────
 echo ---------------------------------------------
 if %FAILED_COUNT% equ 0 (
     echo    Installation Complete!
@@ -181,16 +183,14 @@ echo ---------------------------------------------
 echo.
 echo   Release: %RELEASE_TAG%
 echo.
-
 echo Installed:
 for %%i in (%SELECTED_INDICES%) do (
     call set "LABEL=%%PLATFORM_%%i_LABEL%%"
     call set "BIN_DEST=%%PLATFORM_%%i_BIN_DEST%%"
     call set "BIN_FINAL=%%PLATFORM_%%i_BIN_FINAL%%"
-    set "FULL_PATH=!BIN_DEST!\!BIN_FINAL!"
-    if exist "!FULL_PATH!" (
-        echo    [OK] !LABEL!
-        echo         -^> !FULL_PATH!
+    if exist "!BIN_DEST!\!BIN_FINAL!" (
+        echo    [OK]   !LABEL!
+        echo           -^> !BIN_DEST!\!BIN_FINAL!
     ) else (
         echo    [FAIL] !LABEL! (failed)
     )
@@ -207,13 +207,14 @@ if %FAILED_COUNT% gtr 0 (
 
 echo.
 echo Next steps:
-echo    1. Place a .gguf model into the models/ folder
-echo       Download one from https://huggingface.co  (Q4_K_M recommended)
+echo    1. Place a .gguf model into the models\ folder
+echo       Download from https://huggingface.co  (Q4_K_M recommended)
 echo    2. Linux/macOS - ./start.sh
 echo       Windows     -  start.bat
 echo.
 pause
 exit /b 0
+
 
 :: ============================================================
 :INSTALL_PLATFORM
@@ -229,6 +230,7 @@ echo ---------------------------------------------
 echo Installing: !LABEL!
 echo ---------------------------------------------
 
+:: ── Find matching asset URL ──────────────────────────────────────────────────
 set "ASSET_URL="
 for /f "usebackq tokens=*" %%u in ("%RELEASE_URLS_FILE%") do (
     echo %%u | findstr /c:"!ASSET!" >nul
@@ -241,10 +243,10 @@ for /f "usebackq tokens=*" %%u in ("%RELEASE_URLS_FILE%") do (
 )
 
 if not defined ASSET_URL (
-    echo [~] No matching asset found for '!LABEL!' - skipping.
+    echo [~] No matching asset for '!LABEL!' - skipping.
     echo     Pattern: !ASSET!
     echo.
-    echo Available non-GPU assets:
+    echo Available CPU-only assets:
     findstr /v /i /c:"cuda" /c:"vulkan" /c:"rocm" /c:"kompute" /c:"sycl" /c:"opencl" /c:"openvino" /c:"openeuler" "%RELEASE_URLS_FILE%"
     echo.
     exit /b 0
@@ -254,9 +256,11 @@ for %%F in ("!ASSET_URL!") do set "ASSET_FILENAME=%%~nxF"
 echo [OK] Asset: !ASSET_FILENAME!
 echo [OK] Destination: !BIN_DEST!
 
+:: ── Download to TEMP (always NTFS, always exec-capable) ─────────────────────
 set "TMP_DOWNLOAD=%TEMP%\!ASSET_FILENAME!"
 set "TMP_EXTRACT=%TEMP%\llama_extract_!IDX!"
-mkdir "!TMP_EXTRACT!" 2>nul
+if exist "!TMP_EXTRACT!" rmdir /s /q "!TMP_EXTRACT!"
+mkdir "!TMP_EXTRACT!"
 
 echo [*] Downloading...
 curl -L --progress-bar -o "!TMP_DOWNLOAD!" "!ASSET_URL!"
@@ -266,37 +270,51 @@ if %ERRORLEVEL% NEQ 0 (
 )
 echo.
 
+:: ── Extract into TEMP ────────────────────────────────────────────────────────
 echo [*] Extracting all files...
+
 if /i "!ARCHIVE_TYPE!"=="zip" (
-    powershell -NoProfile -Command "Expand-Archive -Path '!TMP_DOWNLOAD!' -DestinationPath '!TMP_EXTRACT!' -Force"
+    powershell -NoProfile -Command "Expand-Archive -Path '!TMP_DOWNLOAD!' -DestinationPath '!TMP_EXTRACT!' -Force" 2>nul
     if %ERRORLEVEL% NEQ 0 (
-        echo [!] Extraction failed.
+        echo [!] Zip extraction failed for '!LABEL!'.
         goto CLEANUP_FAIL
     )
-    pushd "!TMP_EXTRACT!"
-    for /d %%d in (*) do (
-        if exist "%%d" (
-            move "%%d\*" . >nul 2>&1
-            rmdir "%%d" 2>nul
+    :: FIX [BUG-13]: flatten using a safe intermediate dir, not in-place move
+    set "TMP_FLAT=%TEMP%\llama_flat_!IDX!"
+    if exist "!TMP_FLAT!" rmdir /s /q "!TMP_FLAT!"
+    mkdir "!TMP_FLAT!"
+    for /d %%d in ("!TMP_EXTRACT!\*") do (
+        :: Check if llama-server.exe is inside a subfolder (versioned zip)
+        if not exist "!TMP_EXTRACT!\llama-server.exe" (
+            xcopy /e /y /q "%%d\*" "!TMP_FLAT!\" >nul 2>&1
         )
     )
-    popd
+    :: If we flattened anything, merge back
+    if exist "!TMP_FLAT!\llama-server.exe" (
+        xcopy /e /y /q "!TMP_FLAT!\*" "!TMP_EXTRACT!\" >nul 2>&1
+    )
+    if exist "!TMP_FLAT!" rmdir /s /q "!TMP_FLAT!"
+
 ) else (
+    :: tar.gz — try --strip-components=1 first
     tar -xzf "!TMP_DOWNLOAD!" -C "!TMP_EXTRACT!" --strip-components=1 >nul 2>&1
     if %ERRORLEVEL% NEQ 0 (
-        tar -xzf "!TMP_DOWNLOAD!" -C "!TMP_EXTRACT!" >nul
+        :: FIX [BUG-13]: extract into a dedicated raw subdir, never overlap EXTRACT
+        set "TMP_RAW=%TEMP%\llama_raw_!IDX!"
+        if exist "!TMP_RAW!" rmdir /s /q "!TMP_RAW!"
+        mkdir "!TMP_RAW!"
+        tar -xzf "!TMP_DOWNLOAD!" -C "!TMP_RAW!" >nul 2>&1
         if %ERRORLEVEL% NEQ 0 (
-            echo [!] Extraction failed.
+            echo [!] Extraction failed for '!LABEL!'.
             goto CLEANUP_FAIL
         )
-        pushd "!TMP_EXTRACT!"
-        for /d %%d in (*) do (
-            if exist "%%d" (
-                move "%%d\*" . >nul 2>&1
-                rmdir "%%d" 2>nul
-            )
+        :: Find and flatten the versioned inner dir safely
+        for /d %%d in ("!TMP_RAW!\*") do (
+            xcopy /e /y /q "%%d\*" "!TMP_EXTRACT!\" >nul 2>&1
         )
-        popd
+        :: If nothing was in a subdir, copy raw root directly
+        xcopy /e /y /q "!TMP_RAW!\*" "!TMP_EXTRACT!\" >nul 2>&1
+        if exist "!TMP_RAW!" rmdir /s /q "!TMP_RAW!"
     )
 )
 
@@ -304,20 +322,28 @@ echo Extracted files:
 dir /b "!TMP_EXTRACT!"
 echo.
 
-set "DEST_DIR=!BIN_DEST!"
-if not exist "!DEST_DIR!" mkdir "!DEST_DIR!"
-xcopy /e /y /q "!TMP_EXTRACT!\*" "!DEST_DIR!\" >nul
+:: ── FIX : Resolve symlinks in TEMP before copying to destination ──
+::
+echo [*] Resolving symlinks for filesystem portability...
+powershell -NoProfile -Command ^
+    "Get-ChildItem '!TMP_EXTRACT!' -Recurse -Force | Where-Object { $_.Attributes -band [System.IO.FileAttributes]::ReparsePoint } | ForEach-Object { try { $link = $_.FullName; $target = $_.Target; if (-not [System.IO.Path]::IsPathRooted($target)) { $target = Join-Path $_.DirectoryName $target }; if (Test-Path $target -PathType Leaf) { $bytes = [System.IO.File]::ReadAllBytes($target); [System.IO.File]::WriteAllBytes($link, $bytes); Write-Host ('[symlink->file] ' + $_.Name) } } catch {} }" 2>nul
+echo.
 
-if exist "!DEST_DIR!\llama-server.exe" (
-    copy /y "!DEST_DIR!\llama-server.exe" "!DEST_DIR!\!BIN_FINAL!" >nul
+:: ── Copy all files to destination ────────────────────────────────────────────
+if not exist "!BIN_DEST!" mkdir "!BIN_DEST!"
+xcopy /e /y /q "!TMP_EXTRACT!\*" "!BIN_DEST!\" >nul
+
+:: ── Rename llama-server → canonical name ────────────────────────────────────
+if exist "!BIN_DEST!\llama-server.exe" (
+    copy /y "!BIN_DEST!\llama-server.exe" "!BIN_DEST!\!BIN_FINAL!" >nul
     echo [OK] Renamed llama-server.exe -^> !BIN_FINAL!
-) else if exist "!DEST_DIR!\llama-server" (
-    copy /y "!DEST_DIR!\llama-server" "!DEST_DIR!\!BIN_FINAL!" >nul
+) else if exist "!BIN_DEST!\llama-server" (
+    copy /y "!BIN_DEST!\llama-server" "!BIN_DEST!\!BIN_FINAL!" >nul
     echo [OK] Renamed llama-server -^> !BIN_FINAL!
 ) else (
-    echo [!] llama-server binary not found in archive.
-    echo Contents of !DEST_DIR!:
-    dir /b "!DEST_DIR!"
+    echo [!] llama-server binary not found in archive for '!LABEL!'
+    echo     Contents of !BIN_DEST!:
+    dir /b "!BIN_DEST!"
     goto CLEANUP_FAIL
 )
 
@@ -329,5 +355,5 @@ exit /b 0
 
 :CLEANUP_FAIL
 del "!TMP_DOWNLOAD!" 2>nul
-rmdir /s /q "!TMP_EXTRACT!" 2>nul
+if exist "!TMP_EXTRACT!" rmdir /s /q "!TMP_EXTRACT!" 2>nul
 exit /b 1
